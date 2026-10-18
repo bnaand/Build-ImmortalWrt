@@ -10,16 +10,6 @@ test -d package
 test -d feeds
 
 # --------------------------------------------------
-# 1. 安装 Argon 主题
-# --------------------------------------------------
-rm -rf feeds/luci/themes/luci-theme-argon
-rm -rf package/luci-theme-argon
-
-git clone --depth 1 \
-  https://github.com/jerrykuku/luci-app-argon-config.git \
-  package/luci-app-argon-config
-
-# --------------------------------------------------
 # 2. 更新 Go 工具链
 # PassWall 的 Xray 等组件可能需要较新的 Go 版本
 # --------------------------------------------------
@@ -125,6 +115,58 @@ exit 0
 EOF
 
 chmod 755 files/etc/uci-defaults/99-cudy-default-lan-ip
+
+
+# --------------------------------------------------
+# 修复 MTK 软件包重复安装 l1dat / l1util 的冲突
+# 由 l1util 软件包统一提供这两个文件
+# --------------------------------------------------
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+matches = []
+
+for path in Path("package").rglob("Makefile"):
+    content = path.read_text(errors="replace")
+    if re.search(r"(?m)^define Package/mtwifi-cfg/install\s*$", content):
+        matches.append((path, content))
+
+if len(matches) != 1:
+    print("ERROR: 无法唯一定位 mtwifi-cfg 的安装规则。")
+    print("匹配到的文件：")
+    for path, _ in matches:
+        print(path)
+    raise SystemExit(1)
+
+path, content = matches[0]
+
+pattern = re.compile(
+    r"(?ms)(^define Package/mtwifi-cfg/install\s*\n)"
+    r"(.*?)"
+    r"(^endef\s*$)"
+)
+
+match = pattern.search(content)
+if not match:
+    raise SystemExit("ERROR: 找到 Makefile，但无法识别 install 规则。")
+
+block = match.group(0)
+
+if "rm -f $(1)/sbin/l1dat $(1)/sbin/l1util" in block:
+    print("MTK 重复文件补丁已存在，跳过。")
+else:
+    new_block = (
+        match.group(1)
+        + match.group(2)
+        + "\trm -f $(1)/sbin/l1dat $(1)/sbin/l1util\n"
+        + match.group(3)
+    )
+    content = content[:match.start()] + new_block + content[match.end():]
+    path.write_text(content)
+    print(f"已修补：{path}")
+
+PY
 
 # --------------------------------------------------
 # 7. 设置固件名称前缀
